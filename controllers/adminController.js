@@ -6,12 +6,31 @@ const Payment = require('../models/Payment');
 // @route   GET /api/admin/kyc
 exports.getAllKYC = async (req, res) => {
     try {
-        const kycs = await KYC.find().populate('user', 'fullName email').sort('-createdAt');
+        const { search, status } = req.query;
+        let query = {};
+
+        if (status) {
+            query.status = status;
+        }
+
+        let kycs = await KYC.find(query)
+            .populate('user', 'fullName email')
+            .sort('-createdAt');
+
+        if (search) {
+            const searchLower = search.toLowerCase();
+            kycs = kycs.filter(kyc => 
+                kyc.user?.fullName?.toLowerCase().includes(searchLower) || 
+                kyc.user?.email?.toLowerCase().includes(searchLower)
+            );
+        }
+
         res.json(kycs);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };
+
 
 // @desc    Update KYC Status
 // @route   PUT /api/admin/kyc/:id
@@ -39,12 +58,32 @@ exports.updateKYCStatus = async (req, res) => {
 // @route   GET /api/admin/payments
 exports.getAllPayments = async (req, res) => {
     try {
-        const payments = await Payment.find().populate('user', 'fullName email').sort('-createdAt');
+        const { search, status } = req.query;
+        let query = {};
+
+        if (status) {
+            query.status = status;
+        }
+
+        let payments = await Payment.find(query)
+            .populate('user', 'fullName email')
+            .sort('-createdAt');
+
+        if (search) {
+            const searchLower = search.toLowerCase();
+            payments = payments.filter(p => 
+                p.user?.fullName?.toLowerCase().includes(searchLower) || 
+                p.user?.email?.toLowerCase().includes(searchLower) ||
+                p.transactionId?.toLowerCase().includes(searchLower)
+            );
+        }
+
         res.json(payments);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };
+
 
 // @desc    Update Payment Status & Referral Commission
 // @route   PUT /api/admin/payments/:id
@@ -99,12 +138,28 @@ exports.updatePaymentStatus = async (req, res) => {
 // @route   GET /api/admin/users
 exports.getAllUsers = async (req, res) => {
     try {
-        const users = await User.find().select('-password').sort('-createdAt');
+        const { search, role, tier } = req.query;
+        let query = {};
+
+        if (role) query.role = role;
+        if (tier) query.tier = tier;
+
+        let users = await User.find(query).select('-password').sort('-createdAt');
+
+        if (search) {
+            const searchLower = search.toLowerCase();
+            users = users.filter(u => 
+                u.fullName?.toLowerCase().includes(searchLower) || 
+                u.email?.toLowerCase().includes(searchLower)
+            );
+        }
+
         res.json(users);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };
+
 
 // @desc    Get Analytics
 // @route   GET /api/admin/analytics
