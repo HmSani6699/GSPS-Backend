@@ -1,33 +1,31 @@
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
+require('dotenv').config();
 
-const sendEmail = async (options) => {
-    // For production, use real SMTP. For dev/demo, using a simple transporter.
-    const transporter = nodemailer.createTransport({
-        service: process.env.EMAIL_SERVICE,
-        auth: {
-            user: process.env.EMAIL_USER,
-            pass: process.env.EMAIL_PASS
+let resend;
+if (process.env.RESEND_API_KEY) {
+    resend = new Resend(process.env.RESEND_API_KEY);
+    console.log('Resend API Key found and initialized.');
+} else {
+    console.warn('WARNING: RESEND_API_KEY is missing from .env. Email features will not work.');
+}
+
+const sendEmail = async ({ to, subject, html }) => {
+    try {
+        if (!resend) {
+            console.error('Cannot send email: RESEND_API_KEY is not configured');
+            return null;
         }
-    });
-
-    // Mock sending for demo if credentials are not provided
-    if (!process.env.EMAIL_USER || process.env.EMAIL_USER === 'your-email@gmail.com') {
-        console.log('--- MOCK EMAIL ---');
-        console.log(`To: ${options.email}`);
-        console.log(`Subject: ${options.subject}`);
-        console.log(`Message: ${options.message}`);
-        console.log('------------------');
-        return;
+        const data = await resend.emails.send({
+            from: 'onboarding@resend.dev', // Replace with your verified domain
+            to,
+            subject,
+            html,
+        });
+        return data;
+    } catch (error) {
+        console.error('Error sending email:', error);
+        throw new Error('Failed to send email');
     }
-
-    const mailOptions = {
-        from: `GSPS Support <${process.env.EMAIL_USER}>`,
-        to: options.email,
-        subject: options.subject,
-        text: options.message
-    };
-
-    await transporter.sendMail(mailOptions);
 };
 
-module.exports = sendEmail;
+module.exports = { sendEmail };
