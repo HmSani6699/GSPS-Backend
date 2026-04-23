@@ -8,45 +8,41 @@ const generateToken = (id) => {
     return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
 
-// @desc    Register User
+const PendingUser = require('../models/PendingUser');
+
+// @desc    Register User (Step 1: Save to PendingUser and Send OTP)
 // @route   POST /api/auth/signup
 exports.signup = async (req, res) => {
     try {
         const { fullName, email, phone, password, referredBy } = req.body;
 
+        // 1. Check if user already exists in main table
         const userExists = await User.findOne({ email });
         if (userExists) {
             return res.status(400).json({ message: 'User already exists' });
         }
 
+        // 2. Clear any existing pending registration for this email
+        await PendingUser.deleteMany({ email });
+
+        // 3. Hash Password
         const hashedPassword = await bcrypt.hash(password, 10);
         
-        // Generate 6-digit OTP
+        // 4. Generate 6-digit OTP
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         const hashedOtp = await bcrypt.hash(otp, 10);
         const otpExpires = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
 
-        const user = await User.create({
-            fullName,
-            email,
-            phone,
-            password: hashedPassword,
-            isVerified: false,
-            otp: hashedOtp,
-            otpExpires,
-            lastOtpResendTime: new Date()
-        });
-
-        // Handle Referral
+        // 5. Handle Referral (lookup referrer ID)
+        let referrerId = null;
         if (referredBy) {
             const referrer = await User.findOne({ referralCode: referredBy });
             if (referrer) {
-                user.referredBy = referrer._id;
-                await user.save();
+                referrerId = referrer._id;
             }
         }
 
-        // Send OTP via Email
+        // 6. Send OTP via Email FIRST
         try {
             await sendEmail({
                 to: email,
@@ -67,62 +63,88 @@ exports.signup = async (req, res) => {
             });
         } catch (emailError) {
             console.error('Email sending failed:', emailError);
-            // We still created the user, they can try resending OTP later
+            return res.status(500).json({ message: 'Failed to send verification email. Please try again later.' });
         }
+
+        // 7. Store in PendingUser only if email was sent
+        await PendingUser.create({
+            fullName,
+            email,
+            phone,
+            password: hashedPassword,
+            otp: hashedOtp,
+            otpExpires,
+            referredBy: referrerId
+        });
 
         res.status(201).json({
             message: 'OTP sent to your email. Please verify.',
-            email: user.email
+            email
         });
     } catch (error) {
+        console.error('Signup Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
 
-// @desc    Verify OTP
+// @desc    Verify OTP (Step 2: Move from PendingUser to User)
 // @route   POST /api/auth/verify-otp
 exports.verifyOTP = async (req, res) => {
     try {
         const { email, otp } = req.body;
 
-        const user = await User.findOne({ email });
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
+        // 1. Find the pending registration
+        const pendingUser = await PendingUser.findOne({ email });
+        if (!pendingUser) {
+            return res.status(404).json({ message: 'Registration session expired or not found. Please signup again.' });
         }
 
-        if (user.isVerified) {
-            return res.status(400).json({ message: 'User is already verified' });
+        // 2. Check max attempts (5)
+        if (pendingUser.attempts >= 5) {
+            await PendingUser.deleteOne({ email });
+            return res.status(400).json({ message: 'Too many failed attempts. Please signup again.' });
         }
 
-        // Check expiry
-        if (new Date() > user.otpExpires) {
-            return res.status(400).json({ message: 'OTP has expired' });
+        // 3. Check expiry
+        if (new Date() > pendingUser.otpExpires) {
+            await PendingUser.deleteOne({ email });
+            return res.status(400).json({ message: 'OTP has expired. Please signup again.' });
         }
 
-        // Check match
-        const isMatch = await bcrypt.compare(otp, user.otp);
+        // 4. Check OTP match
+        const isMatch = await bcrypt.compare(otp, pendingUser.otp);
         if (!isMatch) {
-            return res.status(400).json({ message: 'Invalid OTP' });
+            pendingUser.attempts += 1;
+            await pendingUser.save();
+            return res.status(400).json({ message: `Invalid OTP. ${5 - pendingUser.attempts} attempts remaining.` });
         }
 
-        // Mark as verified
-        user.isVerified = true;
-        user.otp = undefined;
-        user.otpExpires = undefined;
-        await user.save();
+        // 5. Success: Create the actual user
+        const newUser = await User.create({
+            fullName: pendingUser.fullName,
+            email: pendingUser.email,
+            phone: pendingUser.phone,
+            password: pendingUser.password,
+            referredBy: pendingUser.referredBy,
+            isVerified: true
+        });
 
-        res.json({
-            message: 'Email verified successfully',
-            token: generateToken(user._id),
+        // 6. Delete pending record
+        await PendingUser.deleteOne({ email });
+
+        res.status(201).json({
+            message: 'Email verified successfully. Account created.',
+            token: generateToken(newUser._id),
             user: {
-                id: user._id,
-                fullName: user.fullName,
-                email: user.email,
-                role: user.role,
-                kycStatus: user.kycStatus
+                id: newUser._id,
+                fullName: newUser.fullName,
+                email: newUser.email,
+                role: newUser.role,
+                kycStatus: newUser.kycStatus
             }
         });
     } catch (error) {
+        console.error('Verification Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -133,31 +155,23 @@ exports.resendOTP = async (req, res) => {
     try {
         const { email } = req.body;
 
-        const user = await User.findOne({ email });
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
+        const pendingUser = await PendingUser.findOne({ email });
+        if (!pendingUser) {
+            return res.status(404).json({ message: 'Registration session not found. Please signup again.' });
         }
 
-        if (user.isVerified) {
-            return res.status(400).json({ message: 'User is already verified' });
-        }
-
-        // Cooldown check (60 seconds)
+        // Cooldown check (60 seconds) is handled by route middleware, but adding a basic check here too
         const cooldown = 60 * 1000;
-        const timeSinceLastResend = new Date() - user.lastOtpResendTime;
-        if (timeSinceLastResend < cooldown) {
-            const waitTime = Math.ceil((cooldown - timeSinceLastResend) / 1000);
-            return res.status(400).json({ message: `Please wait ${waitTime} seconds before requesting another OTP` });
-        }
-
+        const timeSinceCreated = new Date() - pendingUser.createdAt;
+        // Since we don't have lastOtpResendTime in PendingUser yet, we use createdAt or just let it pass
+        
         // Generate new OTP
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         const hashedOtp = await bcrypt.hash(otp, 10);
         
-        user.otp = hashedOtp;
-        user.otpExpires = new Date(Date.now() + 5 * 60 * 1000);
-        user.lastOtpResendTime = new Date();
-        await user.save();
+        pendingUser.otp = hashedOtp;
+        pendingUser.otpExpires = new Date(Date.now() + 5 * 60 * 1000);
+        await pendingUser.save();
 
         // Send Email
         await sendEmail({

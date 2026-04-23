@@ -30,15 +30,6 @@ const userSchema = new mongoose.Schema({
         type: Boolean,
         default: false
     },
-    otp: {
-        type: String
-    },
-    otpExpires: {
-        type: Date
-    },
-    lastOtpResendTime: {
-        type: Date
-    },
     kycStatus: {
         type: String,
         enum: ['none', 'pending', 'approved', 'rejected'],

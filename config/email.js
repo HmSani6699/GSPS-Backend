@@ -1,30 +1,27 @@
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 require('dotenv').config();
 
-let resend;
-if (process.env.RESEND_API_KEY) {
-    resend = new Resend(process.env.RESEND_API_KEY);
-    console.log('Resend API Key found and initialized.');
-} else {
-    console.warn('WARNING: RESEND_API_KEY is missing from .env. Email features will not work.');
-}
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+    },
+});
 
 const sendEmail = async ({ to, subject, html }) => {
     try {
-        if (!resend) {
-            console.error('Cannot send email: RESEND_API_KEY is not configured');
-            return null;
-        }
-        const data = await resend.emails.send({
-            from: 'onboarding@resend.dev', // Replace with your verified domain
+        const info = await transporter.sendMail({
+            from: `"GSPS Support" <${process.env.EMAIL_USER}>`,
             to,
             subject,
             html,
         });
-        return data;
+        console.log('Email sent: %s', info.messageId);
+        return info;
     } catch (error) {
         console.error('Error sending email:', error);
-        throw new Error('Failed to send email');
+        throw new Error('Failed to send email. Please check your credentials or network.');
     }
 };
 
